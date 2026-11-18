@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package labreserve.diagnostics.v1;
+
+option go_package = "github.com/IdaemonI/labreserve/gen/diagnostics/v1;diagnosticsv1";
+
+import "google/protobuf/timestamp.proto";
+
+// Diagnostics reads a synthetic snapshot. It never starts tests or changes a reservation.
+service Diagnostics {
+  rpc InspectDevice(InspectDeviceRequest) returns (InspectDeviceResponse);
+}
+
+message InspectDeviceRequest {
+  string device_id = 1;
+}
+
+enum Health {
+  HEALTH_UNSPECIFIED = 0;
+  HEALTH_OK = 1;
+  HEALTH_FAULT = 2;
+}
+
+message InspectDeviceResponse {
+  string device_id = 1;
+  Health health = 2;
+  string diagnostic_code = 3;
+  google.protobuf.Timestamp observed_at = 4;
+}

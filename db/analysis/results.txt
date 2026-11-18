@@ -1,0 +1,95 @@
+Pager usage is off.
+CREATE SCHEMA
+SET
+                                                                 version
+------------------------------------------------------------------------------------------------------------------------------------------
+ PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit
+(1 row)
+
+ shared_buffers
+----------------
+ 128MB
+(1 row)
+
+ work_mem
+----------
+ 4MB
+(1 row)
+
+CREATE TABLE
+CREATE TABLE
+CREATE INDEX
+INSERT 0 100
+INSERT 0 200000
+ANALYZE
+ total_rows | matching_device_rows
+------------+----------------------
+     200000 |                 2000
+(1 row)
+
+WITHOUT history index
+                                                                 QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=4780.30..4782.60 rows=20 width=94) (actual time=197.944..250.989 rows=20 loops=1)
+   Buffers: shared hit=2338
+   ->  Gather Merge  (cost=4780.30..4913.81 rows=1161 width=94) (actual time=197.942..250.983 rows=20 loops=1)
+         Workers Planned: 1
+         Workers Launched: 1
+         Buffers: shared hit=2338
+         ->  Sort  (cost=3780.29..3783.19 rows=1161 width=94) (actual time=175.620..175.624 rows=16 loops=2)
+               Sort Key: created_at DESC, id DESC
+               Sort Method: top-N heapsort  Memory: 30kB
+               Buffers: shared hit=2338
+               Worker 0:  Sort Method: top-N heapsort  Memory: 30kB
+               ->  Parallel Seq Scan on reservations  (cost=0.00..3749.39 rows=1161 width=94) (actual time=0.022..169.212 rows=1000 loops=2)
+                     Filter: (device_id = 'analysis-42'::text)
+                     Rows Removed by Filter: 99000
+                     Buffers: shared hit=2273
+ Planning:
+   Buffers: shared hit=37
+ Planning Time: 0.243 ms
+ Execution Time: 251.027 ms
+(19 rows)
+
+CREATE INDEX
+ANALYZE
+WITH history index
+                                                                         QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.42..56.15 rows=20 width=94) (actual time=0.089..0.136 rows=20 loops=1)
+   Buffers: shared hit=20 read=3
+   ->  Index Scan using reservations_device_history_idx on reservations  (cost=0.42..5871.66 rows=2107 width=94) (actual time=0.088..0.129 rows=20 loops=1)
+         Index Cond: (device_id = 'analysis-42'::text)
+         Buffers: shared hit=20 read=3
+ Planning:
+   Buffers: shared hit=24 read=1
+ Planning Time: 0.374 ms
+ Execution Time: 0.167 ms
+(9 rows)
+
+WITH history index, OFFSET 1000
+                                                                        QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=2557.48..2557.53 rows=20 width=94) (actual time=17.849..17.860 rows=20 loops=1)
+   Buffers: shared hit=2003 read=14
+   ->  Sort  (cost=2554.98..2560.24 rows=2107 width=94) (actual time=17.533..17.716 rows=1020 loops=1)
+         Sort Key: created_at DESC, id DESC
+         Sort Method: quicksort  Memory: 314kB
+         Buffers: shared hit=2003 read=14
+         ->  Bitmap Heap Scan on reservations  (cost=80.75..2439.15 rows=2107 width=94) (actual time=1.966..12.703 rows=2000 loops=1)
+               Recheck Cond: (device_id = 'analysis-42'::text)
+               Heap Blocks: exact=2000
+               Buffers: shared hit=2003 read=14
+               ->  Bitmap Index Scan on reservations_device_history_idx  (cost=0.00..80.22 rows=2107 width=0) (actual time=1.030..1.030 rows=2000 loops=1)
+                     Index Cond: (device_id = 'analysis-42'::text)
+                     Buffers: shared hit=3 read=14
+ Planning:
+   Buffers: shared hit=1
+ Planning Time: 0.163 ms
+ Execution Time: 17.911 ms
+(17 rows)
+
+psql:db/analysis/history.sql:83: NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to table devices
+drop cascades to table reservations
+DROP SCHEMA

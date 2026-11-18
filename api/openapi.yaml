@@ -1,0 +1,609 @@
+openapi: 3.1.0
+info:
+  title: LabReserve API
+  version: 1.0.0
+  description: |
+    Synthetic laboratory device reservations. A reservation remains active until
+    explicitly released. There is no scheduling, expiration or authentication.
+    This educational service is intended for local use only.
+    Times are RFC 3339 timestamps in UTC. Diagnostic health and occupancy are
+    independent: a FAULT device may be reserved.
+    Unknown routes return 404 and unsupported methods return 405, both using
+    the common JSON error envelope. Canceled requests may return 408 with
+    code request_canceled if the client is still connected.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local controller
+tags:
+  - name: Devices
+    description: Occupancy and read-only diagnostic snapshots
+  - name: Reservations
+    description: Create and release reservations and read their history
+  - name: Health
+    description: Process liveness and PostgreSQL readiness
+security: []
+paths:
+  /devices:
+    get:
+      operationId: listDevices
+      summary: List all devices and their active reservations
+      tags: [Devices]
+      description: Occupancy is derived from active reservations in PostgreSQL.
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '200':
+          description: Devices ordered by ID; an empty list is represented as an array.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Device'
+              example:
+                - id: sensor-a1
+                  name: Sensor Simulator A1
+                  kind: sensor
+                  occupied: false
+                  active_reservation_id: null
+        '408':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/DependencyTimeout'
+  /reservations:
+    post:
+      operationId: createReservation
+      summary: Reserve a free device
+      tags: [Reservations]
+      description: |
+        Exactly one active reservation per device is enforced by PostgreSQL.
+        Creating a reservation is not idempotent; a retry after a lost success
+        response can return 409. Owners are labels, not authenticated identities.
+        Leading and trailing whitespace is removed from owner. The device_id is
+        validated without normalization.
+        Unknown JSON fields, null, multiple JSON values and malformed JSON are
+        rejected. The request body is limited to 4096 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReservation'
+            example:
+              device_id: sensor-a1
+              owner: engineer-01
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '201':
+          description: Active reservation created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+              example:
+                id: 018f22a0-1a1c-4a3e-8b43-9a1baf9e1011
+                device_id: sensor-a1
+                owner: engineer-01
+                created_at: '2026-11-18T12:00:00Z'
+                released_at: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/DeviceNotFound'
+        '409':
+          description: The device already has an active reservation.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: device_occupied
+                  message: Device already has an active reservation
+        '413':
+          description: The request body exceeds 4096 bytes.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: body_too_large
+                  message: Request body exceeds 4096 bytes
+        '415':
+          description: Content-Type must be application/json; parameters such as charset are accepted.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: unsupported_media_type
+                  message: Content-Type must be application/json
+        '408':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/DependencyTimeout'
+  /reservations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: UUID of the reservation to release.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: releaseReservation
+      summary: Release a specific reservation
+      tags: [Reservations]
+      description: |
+        The first release sets released_at. Releasing the same known reservation
+        again returns 204 without changing that timestamp. An old reservation's
+        release cannot affect a newer reservation for the same device. History
+        is preserved; this operation does not delete the row.
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '204':
+          description: Reservation is released, including an already released reservation.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: No reservation exists with this UUID.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: reservation_not_found
+                  message: Reservation not found
+        '408':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/DependencyTimeout'
+  /devices/{id}/reservations:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+    get:
+      operationId: listReservationHistory
+      summary: Read a device's reservation history
+      tags: [Reservations]
+      description: |
+        Includes active and released reservations, ordered by created_at DESC,
+        id DESC. UUID provides a deterministic tie-breaker. Unknown devices
+        return 404 even if their history would be empty. Offset pagination is
+        not a snapshot across separate requests.
+      parameters:
+        - name: limit
+          in: query
+          description: Number of records to return. Must be a single integer value.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          example: 20
+        - name: offset
+          in: query
+          description: Number of records to skip. Must be a single integer value.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 2147483647
+            default: 0
+          example: 0
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '200':
+          description: A page of reservations; items is an array even when empty.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/History'
+              example:
+                items: []
+                limit: 20
+                offset: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/DeviceNotFound'
+        '408':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/DependencyTimeout'
+  /devices/{id}/diagnostics:
+    parameters:
+      - $ref: '#/components/parameters/DeviceID'
+    get:
+      operationId: inspectDevice
+      summary: Read a diagnostic snapshot from the simulator over gRPC
+      tags: [Devices]
+      description: |
+        The device must exist in PostgreSQL. Diagnostics do not change the
+        device or reservations. FAULT is a successful observation (HTTP 200),
+        independent of occupancy. Each gRPC call has a configured deadline.
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '200':
+          description: A fresh snapshot, including a device diagnostic FAULT.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Diagnostic'
+              examples:
+                healthy:
+                  value:
+                    device_id: sensor-a1
+                    health: OK
+                    diagnostic_code: NONE
+                    observed_at: '2026-11-18T12:00:00Z'
+                fault:
+                  value:
+                    device_id: adapter-b1
+                    health: FAULT
+                    diagnostic_code: INTERFACE_ERROR
+                    observed_at: '2026-11-18T12:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/DeviceNotFound'
+        '408':
+          $ref: '#/components/responses/RequestCanceled'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          description: The simulator returned an unexpected gRPC error or malformed snapshot.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: diagnostics_upstream_error
+                  message: Unexpected diagnostics service response
+        '503':
+          description: The simulator is unavailable; reservation operations remain independent.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: diagnostics_unavailable
+                  message: Diagnostics service unavailable
+        '504':
+          $ref: '#/components/responses/DependencyTimeout'
+  /healthz:
+    get:
+      operationId: getLiveness
+      summary: Check whether the controller process is alive
+      tags: [Health]
+      description: Does not contact PostgreSQL or the simulator.
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '200':
+          description: Process is serving HTTP requests.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+              example:
+                status: ok
+  /readyz:
+    get:
+      operationId: getReadiness
+      summary: Check whether PostgreSQL is reachable
+      tags: [Health]
+      description: |
+        Uses a bounded PostgreSQL ping. Diagnostics availability is not required
+        for reservation readiness. Migrations are applied before controller
+        startup by the deployment, not by this endpoint.
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '200':
+          description: PostgreSQL is reachable.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+              example:
+                status: ready
+        '503':
+          description: PostgreSQL ping failed or timed out.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: not_ready
+                  message: Database is not ready
+components:
+  headers:
+    RequestID:
+      description: Server-generated UUID for correlating this response with structured logs.
+      schema:
+        type: string
+        format: uuid
+  parameters:
+    DeviceID:
+      name: id
+      in: path
+      required: true
+      description: Stable identifier of a synthetic laboratory device.
+      schema:
+        $ref: '#/components/schemas/DeviceID'
+      example: sensor-a1
+  schemas:
+    DeviceID:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-z0-9][a-z0-9-]{0,63}$'
+      example: sensor-a1
+    Device:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, occupied, active_reservation_id]
+      properties:
+        id:
+          $ref: '#/components/schemas/DeviceID'
+        name:
+          type: string
+          example: Sensor Simulator A1
+        kind:
+          type: string
+          example: sensor
+        occupied:
+          type: boolean
+          description: True exactly when active_reservation_id is non-null.
+        active_reservation_id:
+          type: [string, 'null']
+          format: uuid
+    CreateReservation:
+      type: object
+      additionalProperties: false
+      required: [device_id, owner]
+      properties:
+        device_id:
+          $ref: '#/components/schemas/DeviceID'
+        owner:
+          type: string
+          minLength: 1
+          description: After trimming leading and trailing whitespace, the label must contain 1–100 Unicode characters without control characters. The raw request body is bounded to 4096 bytes.
+          example: engineer-01
+    Reservation:
+      type: object
+      additionalProperties: false
+      required: [id, device_id, owner, created_at, released_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        device_id:
+          $ref: '#/components/schemas/DeviceID'
+        owner:
+          type: string
+          minLength: 1
+          maxLength: 100
+        created_at:
+          type: string
+          format: date-time
+          description: Creation instant in UTC.
+        released_at:
+          type: [string, 'null']
+          format: date-time
+          description: First release instant in UTC; null means the reservation is active.
+    History:
+      type: object
+      additionalProperties: false
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+    Diagnostic:
+      type: object
+      additionalProperties: false
+      required: [device_id, health, diagnostic_code, observed_at]
+      properties:
+        device_id:
+          $ref: '#/components/schemas/DeviceID'
+        health:
+          type: string
+          enum: [OK, FAULT]
+        diagnostic_code:
+          type: string
+          minLength: 1
+          example: NONE
+        observed_at:
+          type: string
+          format: date-time
+          description: Observation instant supplied by the simulator, in UTC.
+    Status:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              example: device_occupied
+            message:
+              type: string
+              description: Public error message; does not include internal dependency details.
+              example: Device already has an active reservation
+  responses:
+    MethodNotAllowed:
+      description: This path does not support the requested HTTP method.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Allow:
+          description: The HTTP method accepted by this path.
+          schema:
+            type: string
+          example: GET
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: method_not_allowed
+              message: Method not allowed
+    RequestCanceled:
+      description: The client request context was canceled before the operation completed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: request_canceled
+              message: Request canceled
+    BadRequest:
+      description: Invalid input, malformed JSON, unknown JSON fields or invalid pagination.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: invalid_input
+              message: Invalid request parameters
+    DeviceNotFound:
+      description: The device is unknown to PostgreSQL or the simulator.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: device_not_found
+              message: Device not found
+    InternalError:
+      description: An unexpected internal error occurred.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: internal_error
+              message: Internal server error
+    DependencyTimeout:
+      description: The configured request or dependency deadline was exceeded.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            dependency:
+              value:
+                error:
+                  code: dependency_timeout
+                  message: Dependency deadline exceeded
+            diagnostics:
+              value:
+                error:
+                  code: diagnostics_timeout
+                  message: Diagnostics deadline exceeded

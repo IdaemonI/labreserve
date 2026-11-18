@@ -1,0 +1,28 @@
+[Unit]
+Description=LabReserve educational reservation controller
+Documentation=file:/opt/labreserve/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=labreserve
+Group=labreserve
+WorkingDirectory=/opt/labreserve
+EnvironmentFile=/etc/labreserve/controller.env
+ExecStart=/opt/labreserve/bin/controller
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=labreserve
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

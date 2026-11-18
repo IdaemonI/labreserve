@@ -1,0 +1,15 @@
+/bin/
+/coverage/
+/.env
+/.env.*
+!/.env.example
+*.test
+coverage.out
+__pycache__/
+*.pyc
+node_modules/
+.tools/
+/.agents/
+/.codex/
+/.aws/
+/AGENTS.md
